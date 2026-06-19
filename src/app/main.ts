@@ -109,6 +109,7 @@ const size = slider('Printed size', 30, 120, 1, DEFAULT_PARAMS.targetLongestMm);
 const radius = slider('Magnet radius', 1, 6, 0.05, DEFAULT_PARAMS.magnetDiaMm / 2);
 const clearance = slider('Clearance (slip fit)', 0, 0.5, 0.01, DEFAULT_PARAMS.magnetClearMm);
 const depth = slider('Pocket depth', 0.5, 8, 0.1, DEFAULT_PARAMS.magnetThickMm + DEFAULT_PARAMS.depthExtraMm);
+const offset = slider('Pocket offset', 0, 15, 0.1, DEFAULT_PARAMS.offsetMm); // ± along the face axis
 
 const readout = document.createElement('div');
 readout.style.cssText = 'margin-top:8px;color:#445;line-height:1.5';
@@ -125,6 +126,7 @@ function paramsNow(): Params {
     magnetDiaMm: 2 * Number(radius.value),
     magnetClearMm: Number(clearance.value),
     magnetThickMm: Number(depth.value) - DEFAULT_PARAMS.depthExtraMm,
+    offsetMm: Number(offset.value),
   };
 }
 
@@ -198,7 +200,7 @@ function schedule(): void {
   clearTimeout(timer);
   timer = window.setTimeout(() => void run().catch(reportError), 100);
 }
-for (const s of [size, radius, clearance, depth]) s.addEventListener('input', schedule);
+for (const s of [size, radius, clearance, depth, offset]) s.addEventListener('input', schedule);
 
 // ---- load your own OBJ (convex, flat-faced, watertight polyhedron) --------
 const loadBtn = document.createElement('button');
