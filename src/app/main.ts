@@ -16,10 +16,18 @@ import type { Mesh } from '@core/obj.ts';
 import type { Mode } from '@core/magnets.ts';
 import { makeViewer3D } from '@display/viewer3d.ts';
 import { makeFacesView } from '@display/facesView.ts';
-import objText from '../../input/A31_affine_associahedron.obj?raw';
+import a31Obj from '../../input/A31_affine_associahedron.obj?raw';
+import affineA3Obj from '../../input/AffineA3_22.obj?raw';
 import wasmUrl from 'manifold-3d/manifold.wasm?url';
 
 await initManifold(() => wasmUrl);
+
+// bundled models; the selector swaps between them (sliders keep their values).
+const MODELS: { label: string; obj: string }[] = [
+  { label: 'A31', obj: a31Obj },
+  { label: 'Affine A3', obj: affineA3Obj },
+];
+let activeObj = MODELS[0].obj;
 
 // ---- layout: two stacked full-bleed stages (one per tab) + control panel --
 document.body.style.cssText = 'margin:0;overflow:hidden;font:13px system-ui,sans-serif';
@@ -42,6 +50,38 @@ const title = document.createElement('div');
 title.style.cssText = 'font-weight:600;margin-bottom:8px';
 title.textContent = 'Associahedron magnets';
 panel.append(title);
+
+// ---- model selector (which solid) -----------------------------------------
+const modelCap = document.createElement('div');
+modelCap.style.cssText = 'color:#667;margin:2px 0 4px';
+modelCap.textContent = 'Model';
+const modelRow = document.createElement('div');
+modelRow.style.cssText = 'display:flex;gap:6px;margin-bottom:10px';
+panel.append(modelCap, modelRow);
+
+let currentModel = 0; // index into MODELS, or -1 for an uploaded custom OBJ
+const modelBtns = MODELS.map((m, i) => {
+  const b = document.createElement('button');
+  b.textContent = m.label;
+  b.style.cssText =
+    'flex:1;padding:5px 0;border:1px solid #ccd;border-radius:6px;background:#fff;cursor:pointer;font:inherit;font-size:12px';
+  b.onclick = () => selectModel(i);
+  modelRow.append(b);
+  return b;
+});
+function paintModel(): void {
+  modelBtns.forEach((b, i) => {
+    b.style.background = i === currentModel ? '#1d4ed8' : '#fff';
+    b.style.color = i === currentModel ? '#fff' : '#101014';
+  });
+}
+function selectModel(i: number): void {
+  currentModel = i;
+  activeObj = MODELS[i].obj;
+  paintModel();
+  void run(true).catch(reportError); // recenter; sliders keep their values
+}
+paintModel();
 
 // ---- tab bar --------------------------------------------------------------
 type Tab = '3d' | 'faces';
@@ -105,11 +145,14 @@ function slider(label: string, min: number, max: number, step: number, value: nu
   return input;
 }
 
-const size = slider('Printed size', 30, 120, 1, DEFAULT_PARAMS.targetLongestMm);
-const radius = slider('Magnet radius', 1, 6, 0.05, DEFAULT_PARAMS.magnetDiaMm / 2);
-const clearance = slider('Clearance (slip fit)', 0, 0.5, 0.01, DEFAULT_PARAMS.magnetClearMm);
-const depth = slider('Pocket depth', 0.5, 8, 0.1, DEFAULT_PARAMS.magnetThickMm + DEFAULT_PARAMS.depthExtraMm);
-const offset = slider('Pocket offset', 0, 15, 0.1, DEFAULT_PARAMS.offsetMm); // ± along the face axis
+// The app's starting slider values. Kept separate from DEFAULT_PARAMS in the
+// core, which stays pinned to the committed Python parity run.
+const UI = { sizeMm: 70, radiusMm: 5.0, clearanceMm: 0.1, depthMm: 1.9, offsetMm: 8.0 };
+const size = slider('Printed size', 30, 120, 1, UI.sizeMm);
+const radius = slider('Magnet radius', 1, 6, 0.05, UI.radiusMm);
+const clearance = slider('Clearance (slip fit)', 0, 0.5, 0.01, UI.clearanceMm);
+const depth = slider('Pocket depth', 0.5, 8, 0.1, UI.depthMm);
+const offset = slider('Pocket offset', 0, 15, 0.1, UI.offsetMm); // ± along the face axis
 
 const readout = document.createElement('div');
 readout.style.cssText = 'margin-top:8px;color:#445;line-height:1.5';
@@ -133,7 +176,6 @@ function paramsNow(): Params {
 // ---- debounced rebuild (coalesce slider spam; never overlap two drills) ---
 let lastCore: CoreResult | null = null;
 let lastMesh: Mesh | null = null;
-let activeObj = objText; // swapped out when the user loads their own OBJ
 let timer = 0;
 let running = false;
 let pending = false;
@@ -190,6 +232,8 @@ async function loadObj(text: string, name: string): Promise<void> {
   activeObj = text;
   try {
     await run(true); // recenter: it's a different model
+    currentModel = -1; // a custom upload, not one of the built-ins
+    paintModel();
   } catch (e) {
     activeObj = prev;
     reportError(new Error(`could not load ${name}: ${(e as Error).message}`));

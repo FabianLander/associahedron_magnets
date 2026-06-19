@@ -2,7 +2,7 @@
 
 An interactive web app that works out where to drill **cylindrical magnet pockets** into a polyhedral solid so that multiple 3D-printed copies **click together at matching faces**, then lets you tune the magnet geometry live and download a printable STL. It is geometry-driven: it finds which faces can actually be glued face-to-face, places the pockets, checks they fit, drills them, and draws a per-face plan, all from one input mesh.
 
-Built around the 3-D associahedron (`input/A31_affine_associahedron.obj`, K5), but you can load your own polyhedron (see below).
+Two associahedra ship built in (`input/A31_affine_associahedron.obj` and `input/AffineA3_22.obj`), and you can load your own polyhedron (see below).
 
 ## Run it
 
@@ -19,7 +19,7 @@ The app has two tabs, both driven by the same computed state:
 - **3D** shows the drilled solid with orbit controls (drag to rotate, scroll to zoom).
 - **Faces** shows each face flattened into its own plane with its pocket(s) marked.
 
-Four sliders drive everything live (debounced re-drill): **printed size** (longest dimension in mm), **magnet radius**, **clearance** (slip fit added to the hole), and **pocket depth**. The pocket is `2·radius + clearance` wide and `depth` deep. **Download STL** exports the current drilled solid.
+Five sliders drive everything live (debounced re-drill): **printed size** (longest dimension in mm), **magnet radius**, **clearance** (slip fit added to the hole), **pocket depth**, and **pocket offset** (how far the two N/S pockets sit from the face centre, so they can be spread apart as the radius grows). The pocket is `2·radius + clearance` wide and `depth` deep. A **Model** selector switches between the two bundled solids (the A31 and Affine A3 associahedra) while keeping the slider values, and **Load OBJ…** takes your own. **Download STL** exports the current drilled solid.
 
 ## The geometry
 
