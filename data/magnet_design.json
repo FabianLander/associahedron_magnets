@@ -1,0 +1,139 @@
+{
+  "params": {
+    "mode": "single_centered",
+    "units": "mm",
+    "scale_mm_per_model_unit": 4.51503,
+    "target_longest_mm": 60.0,
+    "magnet_dia_mm": 5.0,
+    "magnet_thick_mm": 2.0,
+    "pocket_diameter_mm": 5.15,
+    "pocket_depth_mm": 2.2,
+    "offset_mm": 4.5
+  },
+  "connections": [
+    [
+      2,
+      2
+    ],
+    [
+      3,
+      4
+    ],
+    [
+      5,
+      6
+    ],
+    [
+      7,
+      8
+    ]
+  ],
+  "unusable_faces": [
+    0,
+    1
+  ],
+  "magnets": [
+    {
+      "face": 2,
+      "pole_out": null,
+      "centre": [
+        31.47654,
+        0.0,
+        84.250426
+      ]
+    },
+    {
+      "face": 3,
+      "pole_out": null,
+      "centre": [
+        6.295308,
+        -10.903793,
+        77.229556
+      ]
+    },
+    {
+      "face": 4,
+      "pole_out": null,
+      "centre": [
+        6.295308,
+        10.903793,
+        91.271294
+      ]
+    },
+    {
+      "face": 5,
+      "pole_out": null,
+      "centre": [
+        22.050402,
+        0.0,
+        105.313034
+      ]
+    },
+    {
+      "face": 6,
+      "pole_out": null,
+      "centre": [
+        22.050402,
+        0.0,
+        63.187818
+      ]
+    },
+    {
+      "face": 7,
+      "pole_out": null,
+      "centre": [
+        8.660254,
+        15.0,
+        70.208686
+      ]
+    },
+    {
+      "face": 8,
+      "pole_out": null,
+      "centre": [
+        8.660254,
+        -15.0,
+        98.292164
+      ]
+    }
+  ],
+  "verification": [
+    {
+      "connection": [
+        2,
+        2
+      ],
+      "ok": true
+    },
+    {
+      "connection": [
+        3,
+        4
+      ],
+      "ok": true
+    },
+    {
+      "connection": [
+        5,
+        6
+      ],
+      "ok": true
+    },
+    {
+      "connection": [
+        7,
+        8
+      ],
+      "ok": true
+    }
+  ],
+  "edge_clearance": {
+    "2": 18.173,
+    "3": 15.074,
+    "4": 15.074,
+    "5": 9.426,
+    "6": 9.426,
+    "8": 8.907,
+    "7": 8.907
+  }
+}
