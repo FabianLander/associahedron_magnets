@@ -14,6 +14,7 @@ import { runCore, DEFAULT_PARAMS, type Params, type CoreResult } from '@core/pip
 import { drillSolid, manifoldToMesh, meshToStlBinary, initManifold } from '@core/drill.ts';
 import type { Mesh } from '@core/obj.ts';
 import type { Mode } from '@core/magnets.ts';
+import { buildStick } from '@core/stick.ts';
 import { makeViewer3D } from '@display/viewer3d.ts';
 import { makeFacesView } from '@display/facesView.ts';
 import a31Obj from '../../input/A31_affine_associahedron.obj?raw';
@@ -154,6 +155,21 @@ const clearance = slider('Clearance (slip fit)', 0, 0.5, 0.01, UI.clearanceMm);
 const depth = slider('Pocket depth', 0.5, 8, 0.1, UI.depthMm);
 const offset = slider('Pocket offset', 0, 15, 0.1, UI.offsetMm); // ± along the face axis
 
+// ---- reference stick: an optional extra body added beside the solid ---------
+// A long square bar with one magnet pocket in each end (same hole as the faces:
+// radius + clearance + depth above), so you can mount a magnet on each end and
+// keep a fixed N/S reference. `+` end = North, `−` end = South. Toggling it on
+// drops it into the 3D view and the exported STL, sitting clear of the solid.
+const stickToggle = document.createElement('label');
+stickToggle.style.cssText = 'display:flex;align-items:center;gap:8px;margin:12px 0 2px;cursor:pointer';
+const stickCheck = document.createElement('input');
+stickCheck.type = 'checkbox';
+const stickToggleText = document.createElement('span');
+stickToggleText.textContent = 'Add reference stick';
+stickToggle.append(stickCheck, stickToggleText);
+panel.append(stickToggle);
+const stickLen = slider('Stick length', 25, 120, 1, 55);
+
 const readout = document.createElement('div');
 readout.style.cssText = 'margin-top:8px;color:#445;line-height:1.5';
 panel.append(readout);
@@ -175,7 +191,8 @@ function paramsNow(): Params {
 
 // ---- debounced rebuild (coalesce slider spam; never overlap two drills) ---
 let lastCore: CoreResult | null = null;
-let lastMesh: Mesh | null = null;
+let lastDrilledMesh: Mesh | null = null; // the solid alone (what the drill returns)
+let lastMesh: Mesh | null = null; // what we show + export: solid, plus stick if on
 let timer = 0;
 let running = false;
 let pending = false;
@@ -200,8 +217,8 @@ async function run(recenter = false): Promise<void> {
     );
     const vol = drilled.volume();
     if (!(vol > 0)) throw new Error('not a closed, manifold solid');
-    lastMesh = manifoldToMesh(drilled);
-    viewer.setMesh(lastMesh, recenter);
+    lastDrilledMesh = manifoldToMesh(drilled);
+    await compose(recenter); // sets lastMesh + shows it (with the stick if toggled)
     const pockets = [...core.design.values()].reduce((s, m) => s + m.length, 0);
     const bare = core.unusable.length
       ? ` · ${core.unusable.length} face(s) unmatched (left bare)`
@@ -226,6 +243,56 @@ function reportError(e: unknown): void {
   readout.innerHTML = `<span style="color:#b00">${(e as Error).message}</span>`;
 }
 
+// ---- compose: the displayed/exported mesh = drilled solid (+ stick if on) --
+// Cheap relative to the drill, so the stick toggle/length rebuild only this, not
+// the whole boolean. The stick is parked beside the solid (clear of it) so the
+// single STL holds two disjoint printable bodies.
+async function compose(recenter = false): Promise<void> {
+  if (!lastDrilledMesh) return;
+  let out = lastDrilledMesh;
+  if (stickCheck.checked) {
+    const man = await buildStick({
+      magnetRadiusMm: Number(radius.value),
+      clearanceMm: Number(clearance.value),
+      pocketDepthMm: Number(depth.value),
+      lengthMm: Number(stickLen.value),
+    });
+    out = mergeBeside(lastDrilledMesh, manifoldToMesh(man));
+  }
+  lastMesh = out;
+  viewer.setMesh(out, recenter);
+}
+
+/** Merge `stick` into `solid`, shifted to sit just clear of the solid in +Y. */
+function mergeBeside(solid: Mesh, stick: Mesh): Mesh {
+  let maxY = -Infinity;
+  let cx = 0;
+  let cz = 0;
+  let n = 0;
+  for (const v of solid.vertices) {
+    maxY = Math.max(maxY, v[1]);
+    cx += v[0];
+    cz += v[2];
+    n++;
+  }
+  cx /= n;
+  cz /= n;
+  // stick is centred at origin; its half-extent in Y is half its square side.
+  let halfY = 0;
+  for (const v of stick.vertices) halfY = Math.max(halfY, Math.abs(v[1]));
+  const dx = cx;
+  const dy = maxY + 8 + halfY; // 8 mm gap so the bodies never touch
+  const dz = cz;
+  const base = solid.vertices.length;
+  return {
+    vertices: [
+      ...solid.vertices,
+      ...stick.vertices.map((v) => [v[0] + dx, v[1] + dy, v[2] + dz] as Mesh['vertices'][number]),
+    ],
+    tris: [...solid.tris, ...stick.tris.map((t) => [t[0] + base, t[1] + base, t[2] + base] as [number, number, number])],
+  };
+}
+
 // Swap in a user OBJ; on any failure revert and keep the last good model.
 async function loadObj(text: string, name: string): Promise<void> {
   const prev = activeObj;
@@ -240,11 +307,15 @@ async function loadObj(text: string, name: string): Promise<void> {
   }
 }
 
-function schedule(): void {
+function schedule(job: () => Promise<void>): void {
   clearTimeout(timer);
-  timer = window.setTimeout(() => void run().catch(reportError), 100);
+  timer = window.setTimeout(() => void job().catch(reportError), 100);
 }
-for (const s of [size, radius, clearance, depth, offset]) s.addEventListener('input', schedule);
+// hole + solid geometry → full redrill; the stick is cheap, so its length and
+// toggle only recompose (no redrill). Toggling recenters to frame both bodies.
+for (const s of [size, radius, clearance, depth, offset]) s.addEventListener('input', () => schedule(() => run()));
+stickLen.addEventListener('input', () => schedule(() => compose()));
+stickCheck.addEventListener('change', () => void compose(true).catch(reportError));
 
 // ---- load your own OBJ (convex, flat-faced, watertight polyhedron) --------
 const loadBtn = document.createElement('button');
@@ -278,7 +349,7 @@ dl.onclick = () => {
   const blob = new Blob([meshToStlBinary(lastMesh)], { type: 'model/stl' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'associahedron_magnets.stl';
+  a.download = stickCheck.checked ? 'associahedron_magnets_with_stick.stl' : 'associahedron_magnets.stl';
   a.click();
   URL.revokeObjectURL(a.href);
 };
