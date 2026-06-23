@@ -15,6 +15,7 @@ import { drillSolid, manifoldToMesh, meshToStlBinary, initManifold } from '@core
 import type { Mesh } from '@core/obj.ts';
 import type { Mode } from '@core/magnets.ts';
 import { buildStick } from '@core/stick.ts';
+import { buildTestPlate } from '@core/testplate.ts';
 import { makeViewer3D } from '@display/viewer3d.ts';
 import { makeFacesView } from '@display/facesView.ts';
 import a31Obj from '../../input/A31_affine_associahedron.obj?raw';
@@ -36,10 +37,13 @@ const stage3d = document.createElement('div');
 stage3d.style.cssText = 'position:fixed;inset:0';
 const stageFaces = document.createElement('div');
 stageFaces.style.cssText = 'position:fixed;inset:0;display:none';
-document.body.append(stage3d, stageFaces);
+const stagePlate = document.createElement('div');
+stagePlate.style.cssText = 'position:fixed;inset:0;display:none';
+document.body.append(stage3d, stageFaces, stagePlate);
 
 const viewer = makeViewer3D(stage3d);
 const faces = makeFacesView(stageFaces);
+const plateViewer = makeViewer3D(stagePlate); // the second viewer (fit-test plate)
 
 const panel = document.createElement('div');
 panel.style.cssText =
@@ -85,10 +89,14 @@ function selectModel(i: number): void {
 paintModel();
 
 // ---- tab bar --------------------------------------------------------------
-type Tab = '3d' | 'faces';
+type Tab = '3d' | 'faces' | 'plate';
 const tabBar = document.createElement('div');
 tabBar.style.cssText = 'display:flex;gap:6px;margin-bottom:10px';
-const tabBtns: Record<Tab, HTMLButtonElement> = { '3d': mkTab('3D', '3d'), faces: mkTab('Faces', 'faces') };
+const tabBtns: Record<Tab, HTMLButtonElement> = {
+  '3d': mkTab('3D', '3d'),
+  faces: mkTab('Faces', 'faces'),
+  plate: mkTab('Test plate', 'plate'),
+};
 panel.append(tabBar);
 
 function mkTab(label: string, name: Tab): HTMLButtonElement {
@@ -101,17 +109,25 @@ function mkTab(label: string, name: Tab): HTMLButtonElement {
   return b;
 }
 
+let activeTab: Tab = '3d';
 function setTab(name: Tab): void {
+  activeTab = name;
   stage3d.style.display = name === '3d' ? 'block' : 'none';
   stageFaces.style.display = name === 'faces' ? 'block' : 'none';
-  for (const t of ['3d', 'faces'] as Tab[]) {
+  stagePlate.style.display = name === 'plate' ? 'block' : 'none';
+  for (const t of ['3d', 'faces', 'plate'] as Tab[]) {
     tabBtns[t].style.background = t === name ? '#1d4ed8' : '#fff';
     tabBtns[t].style.color = t === name ? '#fff' : '#101014';
   }
-  // the just-shown stage may have had zero size while hidden; let both views
-  // re-measure, and repaint the faces canvas from the last computed state.
+  platePanel.style.display = name === 'plate' ? 'block' : 'none';
+  // the just-shown stage may have had zero size while hidden; let the views
+  // re-measure, repaint the faces canvas, and (re)build the plate on entry.
   window.dispatchEvent(new Event('resize'));
   if (name === 'faces' && lastCore) faces.update(lastCore);
+  if (name === 'plate') void runPlate().catch(reportError);
+  // the solid may have gone stale while we tuned shared sliders on the plate
+  // tab; rebuild it when we come back to a view that shows it.
+  if ((name === '3d' || name === 'faces') && solidDirty) void run().catch(reportError);
 }
 
 // Dual genderless only: two pockets (N + S) per face, partner slots are the
@@ -148,7 +164,7 @@ function slider(label: string, min: number, max: number, step: number, value: nu
 
 // The app's starting slider values. Kept separate from DEFAULT_PARAMS in the
 // core, which stays pinned to the committed Python parity run.
-const UI = { sizeMm: 70, radiusMm: 5.0, clearanceMm: 0.1, depthMm: 1.9, offsetMm: 8.0 };
+const UI = { sizeMm: 70, radiusMm: 2.5, clearanceMm: 0.1, depthMm: 1.9, offsetMm: 8.0 };
 const size = slider('Printed size', 30, 120, 1, UI.sizeMm);
 const radius = slider('Magnet radius', 1, 6, 0.05, UI.radiusMm);
 const clearance = slider('Clearance (slip fit)', 0, 0.5, 0.01, UI.clearanceMm);
@@ -174,6 +190,57 @@ const readout = document.createElement('div');
 readout.style.cssText = 'margin-top:8px;color:#445;line-height:1.5';
 panel.append(readout);
 
+// ---- test plate: a fit-test coupon shown in the second viewer ---------------
+// Holes step across a clearance sweep (selectable below); each hole Ø = magnet Ø
+// + clearance, plate thickness = pocket depth. Print it, find the hole that
+// slip-fits, and set the main Clearance slider to that value.
+// The fit-test grid: columns sweep diameter (clearance, starting at 0), rows
+// sweep pocket depth (starting at one step). Each axis has its own step COUNT
+// and step SIZE slider.
+const platePanel = document.createElement('div');
+platePanel.style.cssText = 'display:none;border-top:1px solid #e3e3ea;margin-top:10px;padding-top:8px';
+const plateCap = document.createElement('div');
+plateCap.style.cssText = 'color:#667;margin-bottom:2px';
+plateCap.textContent = 'Fit-test grid';
+platePanel.append(plateCap);
+
+// slider local to the plate panel, with its own value formatter (counts show as
+// plain integers, sizes in mm). Mirrors slider() but appends to platePanel.
+function plateSlider(label: string, min: number, max: number, step: number, value: number, unit: string): HTMLInputElement {
+  const wrap = document.createElement('label');
+  wrap.style.cssText = 'display:block;margin:8px 0';
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;justify-content:space-between;margin-bottom:4px';
+  const name = document.createElement('span');
+  name.textContent = label;
+  const val = document.createElement('span');
+  val.style.fontVariantNumeric = 'tabular-nums';
+  head.append(name, val);
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  input.value = String(value);
+  input.style.width = '100%';
+  const sync = () => (val.textContent = unit ? `${Number(input.value).toFixed(2)} ${unit}` : String(Number(input.value)));
+  sync();
+  input.addEventListener('input', sync);
+  wrap.append(head, input);
+  platePanel.append(wrap);
+  return input;
+}
+
+const diaCount = plateSlider('Diameter steps (columns)', 2, 12, 1, 6, '');
+const diaStep = plateSlider('Clearance step', 0.01, 0.2, 0.01, 0.05, 'mm');
+const depthCount = plateSlider('Depth steps (rows)', 2, 10, 1, 4, '');
+const depthStep = plateSlider('Depth step', 0.2, 1.5, 0.05, 0.5, 'mm');
+
+const plateReadout = document.createElement('div');
+plateReadout.style.cssText = 'margin-top:6px;color:#445;line-height:1.5';
+platePanel.append(plateReadout);
+panel.append(platePanel);
+
 // Pocket diameter = magnet + clearance; pocket depth = thickness + extra. We
 // expose the magnet radius, clearance, and final depth, and hold `extra` at its
 // default — so the drilled hole is 2·radius + clearance wide and `depth` deep.
@@ -193,6 +260,8 @@ function paramsNow(): Params {
 let lastCore: CoreResult | null = null;
 let lastDrilledMesh: Mesh | null = null; // the solid alone (what the drill returns)
 let lastMesh: Mesh | null = null; // what we show + export: solid, plus stick if on
+let lastPlateMesh: Mesh | null = null; // the fit-test plate (second viewer / export)
+let solidDirty = false; // shared sliders moved while on the plate tab → solid stale
 let timer = 0;
 let running = false;
 let pending = false;
@@ -230,6 +299,7 @@ async function run(recenter = false): Promise<void> {
       `pocket Ø <b>${core.pocketDiameterMm.toFixed(2)}</b> · depth <b>${core.pocketDepthMm.toFixed(2)}</b> mm<br>` +
       `pockets <b>${pockets}</b> · fits <b>${core.fit.allFit ? 'yes' : 'NO'}</b>${bare}<br>` +
       `volume <b>${vol.toFixed(0)}</b> mm³${warn}`;
+    solidDirty = false; // solid is now current with the sliders
   } finally {
     running = false;
     if (pending) {
@@ -293,6 +363,43 @@ function mergeBeside(solid: Mesh, stick: Mesh): Mesh {
   };
 }
 
+// ---- fit-test plate (independent of the polyhedron; its own viewer) --------
+let plateRunning = false;
+let platePending = false;
+
+async function runPlate(): Promise<void> {
+  if (plateRunning) {
+    platePending = true;
+    return;
+  }
+  plateRunning = true;
+  try {
+    const r = Number(radius.value);
+    const nC = Math.round(Number(diaCount.value));
+    const sC = Number(diaStep.value);
+    const nR = Math.round(Number(depthCount.value));
+    const sR = Number(depthStep.value);
+    const clears = Array.from({ length: nC }, (_, i) => i * sC); // 0, sC, 2·sC, …
+    const depths = Array.from({ length: nR }, (_, i) => (i + 1) * sR); // sR, 2·sR, …
+    const man = await buildTestPlate({ magnetRadiusMm: r, clearancesMm: clears, depthsMm: depths });
+    lastPlateMesh = manifoldToMesh(man);
+    plateViewer.setMesh(lastPlateMesh, true);
+    const cols = clears.map((c) => `+${c.toFixed(2)} → Ø ${(2 * r + c).toFixed(2)}`);
+    plateReadout.innerHTML =
+      `magnet Ø <b>${(2 * r).toFixed(2)}</b> mm · grid <b>${nC}×${nR}</b> (Ø × depth)<br>` +
+      `columns (clearance → Ø): ${cols.join(', ')}<br>` +
+      `rows (depth): ${depths.map((d) => d.toFixed(2)).join(', ')} mm`;
+  } catch (e) {
+    plateReadout.innerHTML = `<span style="color:#b00">${(e as Error).message}</span>`;
+  } finally {
+    plateRunning = false;
+    if (platePending) {
+      platePending = false;
+      void runPlate().catch(reportError);
+    }
+  }
+}
+
 // Swap in a user OBJ; on any failure revert and keep the last good model.
 async function loadObj(text: string, name: string): Promise<void> {
   const prev = activeObj;
@@ -311,11 +418,22 @@ function schedule(job: () => Promise<void>): void {
   clearTimeout(timer);
   timer = window.setTimeout(() => void job().catch(reportError), 100);
 }
-// hole + solid geometry → full redrill; the stick is cheap, so its length and
-// toggle only recompose (no redrill). Toggling recenters to frame both bodies.
-for (const s of [size, radius, clearance, depth, offset]) s.addEventListener('input', () => schedule(() => run()));
+// Shared geometry sliders rebuild whichever view is showing: the drilled solid
+// on 3D/Faces, or the fit-test plate on its tab (the polyhedron then goes stale
+// and is rebuilt when you switch back). The stick is cheap, so its length and
+// toggle only recompose (no redrill); toggling recenters to frame both bodies.
+function buildActive(): Promise<void> {
+  if (activeTab === 'plate') {
+    solidDirty = true;
+    return runPlate();
+  }
+  return run();
+}
+for (const s of [size, radius, clearance, depth, offset]) s.addEventListener('input', () => schedule(buildActive));
 stickLen.addEventListener('input', () => schedule(() => compose()));
 stickCheck.addEventListener('change', () => void compose(true).catch(reportError));
+// the four grid sliders only affect the plate
+for (const s of [diaCount, diaStep, depthCount, depthStep]) s.addEventListener('input', () => schedule(() => runPlate()));
 
 // ---- load your own OBJ (convex, flat-faced, watertight polyhedron) --------
 const loadBtn = document.createElement('button');
@@ -345,11 +463,17 @@ dl.textContent = 'Download STL';
 dl.style.cssText =
   'margin-top:12px;width:100%;padding:7px 0;border:0;border-radius:6px;background:#101014;color:#fff;cursor:pointer;font:inherit';
 dl.onclick = () => {
-  if (!lastMesh) return;
-  const blob = new Blob([meshToStlBinary(lastMesh)], { type: 'model/stl' });
+  const plate = activeTab === 'plate';
+  const mesh = plate ? lastPlateMesh : lastMesh;
+  if (!mesh) return;
+  const blob = new Blob([meshToStlBinary(mesh)], { type: 'model/stl' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = stickCheck.checked ? 'associahedron_magnets_with_stick.stl' : 'associahedron_magnets.stl';
+  a.download = plate
+    ? 'magnet_test_plate.stl'
+    : stickCheck.checked
+      ? 'associahedron_magnets_with_stick.stl'
+      : 'associahedron_magnets.stl';
   a.click();
   URL.revokeObjectURL(a.href);
 };
