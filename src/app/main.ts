@@ -195,8 +195,8 @@ panel.append(readout);
 // + clearance, plate thickness = pocket depth. Print it, find the hole that
 // slip-fits, and set the main Clearance slider to that value.
 // The fit-test grid: columns sweep diameter (clearance, starting at 0), rows
-// sweep pocket depth (starting at one step). Each axis has its own step COUNT
-// and step SIZE slider.
+// sweep pocket depth (starting at the main Pocket depth, stepping up). Each axis
+// has its own step COUNT and step SIZE slider.
 const platePanel = document.createElement('div');
 platePanel.style.cssText = 'display:none;border-top:1px solid #e3e3ea;margin-top:10px;padding-top:8px';
 const plateCap = document.createElement('div');
@@ -379,8 +379,9 @@ async function runPlate(): Promise<void> {
     const sC = Number(diaStep.value);
     const nR = Math.round(Number(depthCount.value));
     const sR = Number(depthStep.value);
+    const d0 = Number(depth.value); // first row = the main pocket depth
     const clears = Array.from({ length: nC }, (_, i) => i * sC); // 0, sC, 2·sC, …
-    const depths = Array.from({ length: nR }, (_, i) => (i + 1) * sR); // sR, 2·sR, …
+    const depths = Array.from({ length: nR }, (_, i) => d0 + i * sR); // d0, d0+sR, …
     const man = await buildTestPlate({ magnetRadiusMm: r, clearancesMm: clears, depthsMm: depths });
     lastPlateMesh = manifoldToMesh(man);
     plateViewer.setMesh(lastPlateMesh, true);
