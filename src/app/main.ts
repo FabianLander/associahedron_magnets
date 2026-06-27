@@ -258,9 +258,9 @@ function paramsNow(): Params {
 
 // ---- debounced rebuild (coalesce slider spam; never overlap two drills) ---
 let lastCore: CoreResult | null = null;
-let lastDrilledMesh: Mesh | null = null; // the solid alone (what the drill returns)
-let lastMesh: Mesh | null = null; // what we show + export: solid, plus stick if on
+let lastDrilledMesh: Mesh | null = null; // the solid alone (what the drill returns / exports)
 let lastPlateMesh: Mesh | null = null; // the fit-test plate (second viewer / export)
+let lastStickMesh: Mesh | null = null; // the reference stick, centred, for its own STL
 let solidDirty = false; // shared sliders moved while on the plate tab → solid stale
 let timer = 0;
 let running = false;
@@ -327,10 +327,12 @@ async function compose(recenter = false): Promise<void> {
       pocketDepthMm: Number(depth.value),
       lengthMm: Number(stickLen.value),
     });
-    out = mergeBeside(lastDrilledMesh, manifoldToMesh(man));
+    lastStickMesh = manifoldToMesh(man); // kept (centred) for its own STL export
+    out = mergeBeside(lastDrilledMesh, lastStickMesh); // beside the solid, for display only
+  } else {
+    lastStickMesh = null;
   }
-  lastMesh = out;
-  viewer.setMesh(out, recenter);
+  viewer.setMesh(out, recenter); // merged solid+stick is for display only
 }
 
 /** Merge `stick` into `solid`, shifted to sit just clear of the solid in +Y. */
@@ -433,7 +435,10 @@ function buildActive(): Promise<void> {
 }
 for (const s of [size, radius, clearance, depth, offset]) s.addEventListener('input', () => schedule(buildActive));
 stickLen.addEventListener('input', () => schedule(() => compose()));
-stickCheck.addEventListener('change', () => void compose(true).catch(reportError));
+stickCheck.addEventListener('change', () => {
+  stickDl.style.display = stickCheck.checked ? 'block' : 'none';
+  void compose(true).catch(reportError);
+});
 // the four grid sliders only affect the plate
 for (const s of [diaCount, diaStep, depthCount, depthStep]) s.addEventListener('input', () => schedule(() => runPlate()));
 
@@ -464,22 +469,35 @@ const dl = document.createElement('button');
 dl.textContent = 'Download STL';
 dl.style.cssText =
   'margin-top:12px;width:100%;padding:7px 0;border:0;border-radius:6px;background:#101014;color:#fff;cursor:pointer;font:inherit';
-dl.onclick = () => {
-  const plate = activeTab === 'plate';
-  const mesh = plate ? lastPlateMesh : lastMesh;
-  if (!mesh) return;
+function saveStl(mesh: Mesh, name: string): void {
   const blob = new Blob([meshToStlBinary(mesh)], { type: 'model/stl' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = plate
-    ? 'magnet_test_plate.stl'
-    : stickCheck.checked
-      ? 'associahedron_magnets_with_stick.stl'
-      : 'associahedron_magnets.stl';
+  a.download = name;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+// The main button exports the solid alone (or the plate on its tab); the stick
+// is exported separately by its own button below.
+dl.onclick = () => {
+  if (activeTab === 'plate') {
+    if (lastPlateMesh) saveStl(lastPlateMesh, 'magnet_test_plate.stl');
+  } else if (lastDrilledMesh) {
+    saveStl(lastDrilledMesh, 'associahedron_magnets.stl');
+  }
 };
 panel.append(dl);
+
+// Separate stick STL; only shown while the reference stick is toggled on.
+const stickDl = document.createElement('button');
+stickDl.textContent = 'Download stick STL';
+stickDl.style.cssText =
+  'display:none;margin-top:8px;width:100%;padding:7px 0;border:1px solid #ccd;border-radius:6px;background:#fff;color:#101014;cursor:pointer;font:inherit';
+stickDl.onclick = () => {
+  if (lastStickMesh) saveStl(lastStickMesh, 'reference_stick.stl');
+};
+panel.append(stickDl);
 
 setTab('3d');
 await run().catch(reportError);
