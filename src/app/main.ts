@@ -118,6 +118,10 @@ function setTab(name: Tab): void {
   stage3d.style.display = name === '3d' ? 'block' : 'none';
   stageFaces.style.display = name === 'faces' ? 'block' : 'none';
   stagePlate.style.display = name === 'plate' ? 'block' : 'none';
+  // The Faces grid is 2D, so the floating panel would cover cells (and swallow
+  // their clicks). Inset that stage to begin just right of the panel; the 3D and
+  // plate stages stay full-bleed, where you can orbit around the panel.
+  stageFaces.style.left = `${Math.round(panel.getBoundingClientRect().right) + 16}px`;
   for (const t of ['3d', 'faces', 'plate'] as Tab[]) {
     tabBtns[t].style.background = t === name ? '#1d4ed8' : '#fff';
     tabBtns[t].style.color = t === name ? '#fff' : '#101014';
@@ -234,10 +238,17 @@ function cycleFaceAxis(faceIdx: number): void {
   if (!lastCore) return;
   const conn = lastCore.connections.find(([a, b]) => a === faceIdx || b === faceIdx);
   if (!conn) return; // unusable face: no pocket pair to cycle
-  if (conn[0] === conn[1]) return; // self-mate: orientation is geometrically forced
   const owner = conn[0];
   const cur = pairOverrides.get(owner) ?? pairAxis;
-  pairOverrides.set(owner, PAIR_CYCLE[(PAIR_CYCLE.indexOf(cur) + 1) % PAIR_CYCLE.length]);
+  let next: PairAxis;
+  if (conn[0] === conn[1]) {
+    // self-mate: only two meaningful states — a single pair, or a four-hole
+    // rectangle (a + can't self-mate). Toggle between them.
+    next = cur === 'both' ? 'u' : 'both';
+  } else {
+    next = PAIR_CYCLE[(PAIR_CYCLE.indexOf(cur) + 1) % PAIR_CYCLE.length];
+  }
+  pairOverrides.set(owner, next);
   paintPair();
   syncUrl();
   void run().catch(reportError); // re-place + re-drill, then faces redraw

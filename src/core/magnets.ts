@@ -80,6 +80,30 @@ function selfMatePair(face: Face, offset: number, along: 'u' | 'v'): Magnet[] | 
   return mags;
 }
 
+/**
+ * Four holes on a self-mating face. A '+' is impossible here (a pair along the
+ * face's half-turn axis would meet itself same-pole), so we use a RECTANGLE: two
+ * N seeds offset to either side of the working axis, each paired with its S
+ * partner = the seed's mate-transform image. The transform is an involution
+ * (gluing twice is the identity), so every N meets an S by construction. Returns
+ * null if the face has no self-mating axis at all.
+ */
+function selfMateRect(face: Face, offset: number): Magnet[] | null {
+  const w = selfMatePair(face, offset, 'u') ? 'u' : selfMatePair(face, offset, 'v') ? 'v' : null;
+  if (!w) return null;
+  const { c, u, v } = faceFrame(face);
+  const wd = w === 'u' ? u : v; // working axis: the centred pair mates along it
+  const ld = w === 'u' ? v : u; // the other axis: spreads the pair into two rows
+  const mate = mateTransform(face, face)!;
+  const out: Magnet[] = [];
+  for (const row of [1, -1] as const) {
+    const seed = add(c, add(scale(wd, offset), scale(ld, row * offset))); // an N
+    out.push({ face: face.idx, pos: seed, pole: 'N' });
+    out.push({ face: face.idx, pos: add(matVec(mate.R, seed) as Vec3, mate.t), pole: 'S' });
+  }
+  return out;
+}
+
 export function placeMagnets(
   byIdx: Map<number, Face>,
   connections: [number, number][],
@@ -109,23 +133,16 @@ export function placeMagnets(
     const axis = pairOverrides?.get(i) ?? pairAxis;
     const want: ('u' | 'v')[] = axis === 'both' ? ['u', 'v'] : [axis];
     if (i === j) {
-      // self-mating face: keep only the requested axes whose N/S pair survives
-      // the face's own mate transform (N→S). If none do, fall back to whichever
-      // single axis does, so the face still gets a working pair.
-      let mags: Magnet[] = [];
-      for (const along of want) {
-        const p = selfMatePair(byIdx.get(i)!, offset, along);
-        if (p) mags = mags.concat(p);
-      }
-      if (mags.length === 0)
-        for (const along of ['u', 'v'] as const) {
-          const p = selfMatePair(byIdx.get(i)!, offset, along);
-          if (p) {
-            mags = p;
-            break;
-          }
-        }
-      design.set(i, mags.length ? mags : pairOn(byIdx.get(i)!, offset, want[0]));
+      // self-mating face: it glues to a flipped copy of itself (a half-turn about
+      // an in-plane axis), so a centred pair only mates along ONE axis and four
+      // holes must be a rectangle, not a +. 'both' builds that rectangle;
+      // otherwise place the single working pair, scanning axes so it stays valid.
+      let mags: Magnet[] | null = axis === 'both' ? selfMateRect(byIdx.get(i)!, offset) : null;
+      mags ??=
+        selfMatePair(byIdx.get(i)!, offset, want[0]) ??
+        selfMatePair(byIdx.get(i)!, offset, 'u') ??
+        selfMatePair(byIdx.get(i)!, offset, 'v');
+      design.set(i, mags ?? pairOn(byIdx.get(i)!, offset, want[0]));
     } else {
       const magsI = want.flatMap((along) => pairOn(byIdx.get(i)!, offset, along));
       const mate = mateTransform(byIdx.get(j)!, byIdx.get(i)!)!;

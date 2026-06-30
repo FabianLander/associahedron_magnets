@@ -43,9 +43,7 @@ export function makeFacesView(container: HTMLElement, opts: FacesViewOpts = {}):
   const connLabel = (c: CoreResult): Map<number, string> => {
     const m = new Map<number, string>();
     for (const [a, b] of c.connections) {
-      // self-mating faces have a geometrically forced pair (see facesView click
-      // handling) — flag them as fixed so the locked cell isn't read as broken.
-      const label = a === b ? `self-mate ${a}↔${a} · fixed` : `pair ${a}↔${b}`;
+      const label = a === b ? `self-mate ${a}↔${a}` : `pair ${a}↔${b}`;
       m.set(a, label);
       m.set(b, label);
     }
@@ -163,10 +161,9 @@ export function makeFacesView(container: HTMLElement, opts: FacesViewOpts = {}):
     const mx = ev.clientX - r.left, my = ev.clientY - r.top;
     for (const cell of cells)
       if (mx >= cell.x && mx < cell.x + cell.w && my >= cell.y && my < cell.y + cell.h) {
-        const usable = core ? !core.unusable.includes(cell.idx) : false;
-        // a self-mating face (partner === itself) has a geometrically forced
-        // pair, so it can't be cycled — treat it as non-interactive.
-        const interactive = usable && partner.get(cell.idx) !== cell.idx;
+        // every usable face is clickable, including the self-mating one — its
+        // click toggles between a single pair and a four-hole rectangle.
+        const interactive = core ? !core.unusable.includes(cell.idx) : false;
         return { idx: cell.idx, interactive };
       }
     return null;
