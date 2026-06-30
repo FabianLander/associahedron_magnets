@@ -27,6 +27,9 @@ export interface Magnet {
 }
 export type Design = Map<number, Magnet[]>;
 export type Mode = 'single_centered' | 'dual_genderless';
+// dual-mode N/S pocket layout on a face: 'u' side by side (the long axis), 'v'
+// stacked (the short axis), or 'both' — both pairs at once (four pockets in a +).
+export type PairAxis = 'u' | 'v' | 'both';
 
 const OPPOSITE: Record<'N' | 'S', 'N' | 'S'> = { N: 'S', S: 'N' };
 
@@ -60,11 +63,37 @@ function pairOn(face: Face, offset: number, along: 'u' | 'v'): Magnet[] {
   ];
 }
 
+/**
+ * A self-mating face's N/S pair along `along`, kept only if it survives the
+ * face's own mate transform with the poles opposed (so N still meets S on an
+ * identical copy). Returns null when that axis can't satisfy it.
+ */
+function selfMatePair(face: Face, offset: number, along: 'u' | 'v'): Magnet[] | null {
+  const mags = pairOn(face, offset, along);
+  const mate = mateTransform(face, face)!;
+  for (const m of mags) {
+    const landed = add(matVec(mate.R, m.pos) as Vec3, mate.t);
+    let partner = mags[0];
+    for (const x of mags) if (dist(x.pos, landed) < dist(partner.pos, landed)) partner = x;
+    if (dist(partner.pos, landed) > 1e-6 || partner.pole === m.pole) return null;
+  }
+  return mags;
+}
+
 export function placeMagnets(
   byIdx: Map<number, Face>,
   connections: [number, number][],
   offset: number,
   mode: Mode = 'single_centered',
+  // default dual layout for the N/S pair(s): 'u' side by side (longest axis),
+  // 'v' stacked, or 'both' (a + of four pockets). Mating alignment holds for any
+  // of them: the partner face's pockets are derived from this one, so every N
+  // still meets an S.
+  pairAxis: PairAxis = 'u',
+  // per-connection overrides of the layout above, keyed by the connection's
+  // owner face (its first, smaller index). A connection with no entry uses
+  // pairAxis.
+  pairOverrides?: Map<number, PairAxis>,
 ): Design {
   const design: Design = new Map();
 
@@ -77,28 +106,28 @@ export function placeMagnets(
 
   // dual_genderless
   for (const [i, j] of connections) {
+    const axis = pairOverrides?.get(i) ?? pairAxis;
+    const want: ('u' | 'v')[] = axis === 'both' ? ['u', 'v'] : [axis];
     if (i === j) {
-      // self-mating face: pick the axis (u or v) whose N/S pair maps to the
-      // opposite pole under the face's own mate transform
-      let chosen: Magnet[] | null = null;
-      for (const along of ['u', 'v'] as const) {
-        const mags = pairOn(byIdx.get(i)!, offset, along);
-        const mate = mateTransform(byIdx.get(i)!, byIdx.get(i)!)!;
-        let good = true;
-        for (const m of mags) {
-          const landed = add(matVec(mate.R, m.pos) as Vec3, mate.t);
-          let partner = mags[0];
-          for (const x of mags) if (dist(x.pos, landed) < dist(partner.pos, landed)) partner = x;
-          if (dist(partner.pos, landed) > 1e-6 || partner.pole === m.pole) good = false;
-        }
-        if (good) {
-          chosen = mags;
-          break;
-        }
+      // self-mating face: keep only the requested axes whose N/S pair survives
+      // the face's own mate transform (N→S). If none do, fall back to whichever
+      // single axis does, so the face still gets a working pair.
+      let mags: Magnet[] = [];
+      for (const along of want) {
+        const p = selfMatePair(byIdx.get(i)!, offset, along);
+        if (p) mags = mags.concat(p);
       }
-      design.set(i, chosen ?? pairOn(byIdx.get(i)!, offset, 'u'));
+      if (mags.length === 0)
+        for (const along of ['u', 'v'] as const) {
+          const p = selfMatePair(byIdx.get(i)!, offset, along);
+          if (p) {
+            mags = p;
+            break;
+          }
+        }
+      design.set(i, mags.length ? mags : pairOn(byIdx.get(i)!, offset, want[0]));
     } else {
-      const magsI = pairOn(byIdx.get(i)!, offset, 'u');
+      const magsI = want.flatMap((along) => pairOn(byIdx.get(i)!, offset, along));
       const mate = mateTransform(byIdx.get(j)!, byIdx.get(i)!)!;
       // Rᵀ = R⁻¹ for the rotation; map i's slots back to j with poles swapped
       const Rt: Mat3 = [

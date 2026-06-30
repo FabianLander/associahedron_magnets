@@ -17,6 +17,7 @@ import {
   fitCheck,
   type Design,
   type Mode,
+  type PairAxis,
   type VerifyResult,
   type FitResult,
 } from './magnets.ts';
@@ -30,6 +31,11 @@ export interface Params {
   depthExtraMm: number;
   offsetMm: number;
   mode: Mode;
+  // dual-mode N/S pair layout: 'u' side by side (default), 'v' stacked, 'both'.
+  // pairOverrides sets it per connection (keyed by owner face). Both optional so
+  // DEFAULT_PARAMS stays a verbatim copy of the Python parity config.
+  pairAxis?: PairAxis;
+  pairOverrides?: Map<number, PairAxis>;
 }
 
 /** Defaults copied verbatim from run_all.py's CONFIG block. */
@@ -74,7 +80,7 @@ export function runCore(objText: string, params: Params = DEFAULT_PARAMS): CoreR
   const mateGraph = flushMateGraph(faces);
   const { connections, unusable } = deriveConnections(mateGraph);
 
-  const design = placeMagnets(byIdx, connections, params.offsetMm, params.mode);
+  const design = placeMagnets(byIdx, connections, params.offsetMm, params.mode, params.pairAxis ?? 'u', params.pairOverrides);
   const v = verify(design, byIdx, connections, params.mode);
   const fit = fitCheck(design, byIdx, pocketDiameterMm / 2);
 

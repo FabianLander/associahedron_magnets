@@ -24,17 +24,28 @@ export interface FacesView {
   dispose(): void;
 }
 
-export function makeFacesView(container: HTMLElement): FacesView {
+export interface FacesViewOpts {
+  onToggleFace?: (faceIdx: number) => void; // a usable face cell was clicked
+}
+
+export function makeFacesView(container: HTMLElement, opts: FacesViewOpts = {}): FacesView {
   const canvas = document.createElement('canvas');
   canvas.style.cssText = 'display:block;width:100%;height:100%';
   container.appendChild(canvas);
   const ctx = canvas.getContext('2d')!;
   let core: CoreResult | null = null;
+  // hit-test rects from the last draw, a face→partner lookup, and the hovered
+  // face (so we can light a cell and its matched partner together).
+  let cells: { idx: number; x: number; y: number; w: number; h: number }[] = [];
+  let partner = new Map<number, number>();
+  let hoverIdx: number | null = null;
 
   const connLabel = (c: CoreResult): Map<number, string> => {
     const m = new Map<number, string>();
     for (const [a, b] of c.connections) {
-      const label = a === b ? `self-mate ${a}↔${a}` : `pair ${a}↔${b}`;
+      // self-mating faces have a geometrically forced pair (see facesView click
+      // handling) — flag them as fixed so the locked cell isn't read as broken.
+      const label = a === b ? `self-mate ${a}↔${a} · fixed` : `pair ${a}↔${b}`;
       m.set(a, label);
       m.set(b, label);
     }
@@ -115,10 +126,28 @@ export function makeFacesView(container: HTMLElement): FacesView {
     const cols = Math.min(n, Math.max(2, Math.floor(W / 240)));
     const rows = Math.ceil(n / cols);
     const cw = W / cols, ch = H / rows;
+    cells = [];
+    const lit = new Set<number>();
+    if (hoverIdx != null) {
+      lit.add(hoverIdx);
+      const p = partner.get(hoverIdx);
+      if (p != null) lit.add(p);
+    }
     ordered.forEach((f, k) => {
+      const x = (k % cols) * cw, y = Math.floor(k / cols) * ch;
       const isUsable = !c.unusable.includes(f.idx);
+      cells.push({ idx: f.idx, x, y, w: cw, h: ch });
+      if (lit.has(f.idx)) {
+        ctx.save();
+        ctx.fillStyle = f.idx === hoverIdx ? 'rgba(29,78,216,0.10)' : 'rgba(29,78,216,0.05)';
+        ctx.fillRect(x + 1, y + 1, cw - 2, ch - 2);
+        ctx.strokeStyle = '#1d4ed8';
+        ctx.lineWidth = f.idx === hoverIdx ? 2 : 1;
+        ctx.strokeRect(x + 1.5, y + 1.5, cw - 3, ch - 3);
+        ctx.restore();
+      }
       const label = isUsable ? (labels.get(f.idx) ?? '') : 'chiral — no mate';
-      drawFace(c, f, isUsable, label, (k % cols) * cw, Math.floor(k / cols) * ch, cw, ch);
+      drawFace(c, f, isUsable, label, x, y, cw, ch);
     });
   }
 
@@ -127,13 +156,60 @@ export function makeFacesView(container: HTMLElement): FacesView {
   }
   window.addEventListener('resize', onResize);
 
+  // Map a mouse event to the face cell under it (CSS pixels: the ctx is scaled by
+  // dpr, but layout/getBoundingClientRect are in CSS pixels, as are the cells).
+  function cellAt(ev: MouseEvent): { idx: number; interactive: boolean } | null {
+    const r = canvas.getBoundingClientRect();
+    const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    for (const cell of cells)
+      if (mx >= cell.x && mx < cell.x + cell.w && my >= cell.y && my < cell.y + cell.h) {
+        const usable = core ? !core.unusable.includes(cell.idx) : false;
+        // a self-mating face (partner === itself) has a geometrically forced
+        // pair, so it can't be cycled — treat it as non-interactive.
+        const interactive = usable && partner.get(cell.idx) !== cell.idx;
+        return { idx: cell.idx, interactive };
+      }
+    return null;
+  }
+  function onClick(ev: MouseEvent): void {
+    const hit = cellAt(ev);
+    if (hit?.interactive) opts.onToggleFace?.(hit.idx);
+  }
+  function onMove(ev: MouseEvent): void {
+    const hit = cellAt(ev);
+    const idx = hit?.interactive ? hit.idx : null;
+    canvas.style.cursor = idx != null ? 'pointer' : 'default';
+    if (idx !== hoverIdx) {
+      hoverIdx = idx;
+      draw();
+    }
+  }
+  function onLeave(): void {
+    canvas.style.cursor = 'default';
+    if (hoverIdx != null) {
+      hoverIdx = null;
+      draw();
+    }
+  }
+  canvas.addEventListener('click', onClick);
+  canvas.addEventListener('mousemove', onMove);
+  canvas.addEventListener('mouseleave', onLeave);
+
   return {
     update(c: CoreResult): void {
       core = c;
+      partner = new Map();
+      for (const [a, b] of c.connections) {
+        partner.set(a, b);
+        partner.set(b, a);
+      }
       draw();
     },
     dispose(): void {
       window.removeEventListener('resize', onResize);
+      canvas.removeEventListener('click', onClick);
+      canvas.removeEventListener('mousemove', onMove);
+      canvas.removeEventListener('mouseleave', onLeave);
       canvas.remove();
     },
   };

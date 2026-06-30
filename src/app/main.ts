@@ -13,7 +13,7 @@
 import { runCore, DEFAULT_PARAMS, type Params, type CoreResult } from '@core/pipeline.ts';
 import { drillSolid, manifoldToMesh, meshToStlBinary, initManifold } from '@core/drill.ts';
 import type { Mesh } from '@core/obj.ts';
-import type { Mode } from '@core/magnets.ts';
+import type { Mode, PairAxis } from '@core/magnets.ts';
 import { buildStick } from '@core/stick.ts';
 import { buildTestPlate } from '@core/testplate.ts';
 import { makeViewer3D } from '@display/viewer3d.ts';
@@ -42,7 +42,7 @@ stagePlate.style.cssText = 'position:fixed;inset:0;display:none';
 document.body.append(stage3d, stageFaces, stagePlate);
 
 const viewer = makeViewer3D(stage3d);
-const faces = makeFacesView(stageFaces);
+const faces = makeFacesView(stageFaces, { onToggleFace: (idx) => cycleFaceAxis(idx) });
 const plateViewer = makeViewer3D(stagePlate); // the second viewer (fit-test plate)
 
 const panel = document.createElement('div');
@@ -83,7 +83,10 @@ function paintModel(): void {
 function selectModel(i: number): void {
   currentModel = i;
   activeObj = MODELS[i].obj;
+  pairOverrides.clear(); // face indices differ per model; drop per-face tweaks
+  paintPair();
   paintModel();
+  syncUrl();
   void run(true).catch(reportError); // recenter; sliders keep their values
 }
 paintModel();
@@ -128,6 +131,7 @@ function setTab(name: Tab): void {
   // the solid may have gone stale while we tuned shared sliders on the plate
   // tab; rebuild it when we come back to a view that shows it.
   if ((name === '3d' || name === 'faces') && solidDirty) void run().catch(reportError);
+  syncUrl();
 }
 
 // Dual genderless only: two pockets (N + S) per face, partner slots are the
@@ -137,7 +141,10 @@ function setTab(name: Tab): void {
 const mode: Mode = 'dual_genderless';
 
 // ---- sliders --------------------------------------------------------------
-function slider(label: string, min: number, max: number, step: number, value: number): HTMLInputElement {
+// A slider carries a `refresh()` so a programmatic value change (e.g. applying
+// state from the URL) can repaint its readout without firing the input handlers.
+type Slider = HTMLInputElement & { refresh: () => void };
+function slider(label: string, min: number, max: number, step: number, value: number): Slider {
   const wrap = document.createElement('label');
   wrap.style.cssText = 'display:block;margin:10px 0';
   const head = document.createElement('div');
@@ -159,7 +166,7 @@ function slider(label: string, min: number, max: number, step: number, value: nu
   input.addEventListener('input', sync);
   wrap.append(head, input);
   panel.append(wrap);
-  return input;
+  return Object.assign(input, { refresh: sync });
 }
 
 // The app's starting slider values. Kept separate from DEFAULT_PARAMS in the
@@ -170,6 +177,71 @@ const radius = slider('Magnet radius', 1, 6, 0.05, UI.radiusMm);
 const clearance = slider('Clearance (slip fit)', 0, 0.5, 0.01, UI.clearanceMm);
 const depth = slider('Pocket depth', 0.5, 8, 0.1, UI.depthMm);
 const offset = slider('Pocket offset', 0, 15, 0.1, UI.offsetMm); // ± along the face axis
+
+// ---- pocket-pair layout (dual mode) ---------------------------------------
+// How the N/S pocket pair sits on each face: 'u' = side by side (the face's long
+// axis), 'v' = stacked (the short axis), 'both' = a + of four pockets. N↔S
+// mating holds for any of them — the partner face's pockets are derived from
+// this one. The three buttons set ALL faces (and clear per-face tweaks); in the
+// Faces tab you can click an individual face to cycle just its matched pair.
+// Changing anything re-places + re-drills the solid.
+let pairAxis: PairAxis = 'u';
+const pairOverrides = new Map<number, PairAxis>(); // owner face → layout
+const PAIR_CYCLE: PairAxis[] = ['u', 'v', 'both'];
+const pairCap = document.createElement('div');
+pairCap.style.cssText = 'color:#667;margin:10px 0 4px';
+pairCap.textContent = 'Pocket pair (all faces)';
+const pairRow = document.createElement('div');
+pairRow.style.cssText = 'display:flex;gap:6px;margin-bottom:4px';
+const pairDefs: { label: string; value: PairAxis }[] = [
+  { label: 'Side by side', value: 'u' },
+  { label: 'Stacked', value: 'v' },
+  { label: 'Both', value: 'both' },
+];
+const pairBtns = pairDefs.map((d) => {
+  const b = document.createElement('button');
+  b.textContent = d.label;
+  b.style.cssText =
+    'flex:1;padding:5px 0;border:1px solid #ccd;border-radius:6px;background:#fff;cursor:pointer;font:inherit;font-size:12px';
+  b.onclick = () => {
+    pairAxis = d.value;
+    pairOverrides.clear(); // a global choice resets any per-face tweaks
+    paintPair();
+    syncUrl();
+    schedule(buildActive); // re-place + re-drill the solid
+  };
+  pairRow.append(b);
+  return b;
+});
+function paintPair(): void {
+  // a global button is "active" only when no per-face overrides are in play, so
+  // the highlight never lies about a mixed state.
+  pairBtns.forEach((b, i) => {
+    const on = pairOverrides.size === 0 && pairDefs[i].value === pairAxis;
+    b.style.background = on ? '#1d4ed8' : '#fff';
+    b.style.color = on ? '#fff' : '#101014';
+  });
+}
+paintPair();
+const pairHint = document.createElement('div');
+pairHint.style.cssText = 'color:#889;font-size:11px;margin:0 0 2px';
+pairHint.textContent = 'Faces tab: click a face to cycle its pair';
+panel.append(pairCap, pairRow, pairHint);
+
+// Cycle one matched pair's layout (side by side → stacked → both → …). Keyed by
+// the connection's owner face; clicking either face of a pair hits the same key.
+function cycleFaceAxis(faceIdx: number): void {
+  if (!lastCore) return;
+  const conn = lastCore.connections.find(([a, b]) => a === faceIdx || b === faceIdx);
+  if (!conn) return; // unusable face: no pocket pair to cycle
+  if (conn[0] === conn[1]) return; // self-mate: orientation is geometrically forced
+  const owner = conn[0];
+  const cur = pairOverrides.get(owner) ?? pairAxis;
+  pairOverrides.set(owner, PAIR_CYCLE[(PAIR_CYCLE.indexOf(cur) + 1) % PAIR_CYCLE.length]);
+  paintPair();
+  syncUrl();
+  void run().catch(reportError); // re-place + re-drill, then faces redraw
+}
 
 // ---- reference stick: an optional extra body added beside the solid ---------
 // A long square bar with one magnet pocket in each end (same hole as the faces:
@@ -253,6 +325,8 @@ function paramsNow(): Params {
     magnetClearMm: Number(clearance.value),
     magnetThickMm: Number(depth.value) - DEFAULT_PARAMS.depthExtraMm,
     offsetMm: Number(offset.value),
+    pairAxis,
+    pairOverrides,
   };
 }
 
@@ -408,10 +482,13 @@ async function runPlate(): Promise<void> {
 async function loadObj(text: string, name: string): Promise<void> {
   const prev = activeObj;
   activeObj = text;
+  pairOverrides.clear(); // face indices differ per model; drop per-face tweaks
+  paintPair();
   try {
     await run(true); // recenter: it's a different model
     currentModel = -1; // a custom upload, not one of the built-ins
     paintModel();
+    syncUrl(); // m drops out — custom OBJs aren't shareable by link
   } catch (e) {
     activeObj = prev;
     reportError(new Error(`could not load ${name}: ${(e as Error).message}`));
@@ -433,10 +510,18 @@ function buildActive(): Promise<void> {
   }
   return run();
 }
-for (const s of [size, radius, clearance, depth, offset]) s.addEventListener('input', () => schedule(buildActive));
-stickLen.addEventListener('input', () => schedule(() => compose()));
+for (const s of [size, radius, clearance, depth, offset])
+  s.addEventListener('input', () => {
+    syncUrl();
+    schedule(buildActive);
+  });
+stickLen.addEventListener('input', () => {
+  syncUrl();
+  schedule(() => compose());
+});
 stickCheck.addEventListener('change', () => {
   stickDl.style.display = stickCheck.checked ? 'block' : 'none';
+  syncUrl();
   void compose(true).catch(reportError);
 });
 // the four grid sliders only affect the plate
@@ -499,5 +584,75 @@ stickDl.onclick = () => {
 };
 panel.append(stickDl);
 
-setTab('3d');
+// ---- shareable state in the URL -------------------------------------------
+// The design (model, magnet sliders, per-face pocket layout, reference stick,
+// active tab) round-trips through the query string so a link reproduces it.
+// Custom uploaded OBJs can't be serialised, so a link drops back to a built-in;
+// the fit-test grid is a local calibration tool and is left out on purpose.
+function serializeState(): string {
+  const p = new URLSearchParams();
+  if (currentModel >= 0) p.set('m', String(currentModel)); // omit custom uploads
+  p.set('size', size.value);
+  p.set('r', radius.value);
+  p.set('c', clearance.value);
+  p.set('d', depth.value);
+  p.set('o', offset.value);
+  p.set('pa', pairAxis);
+  if (pairOverrides.size) p.set('ov', [...pairOverrides].map(([f, a]) => `${f}:${a}`).join(','));
+  if (stickCheck.checked) {
+    p.set('stick', '1');
+    p.set('sl', stickLen.value);
+  }
+  if (activeTab !== '3d') p.set('tab', activeTab);
+  return p.toString();
+}
+
+function syncUrl(): void {
+  history.replaceState(null, '', `?${serializeState()}`); // no new history entry
+}
+
+// Read the query string into the controls. Returns the tab to open. Sets values
+// directly (with refresh()) so it never triggers a rebuild — the caller runs.
+function applyStateFromUrl(): Tab {
+  const p = new URLSearchParams(location.search);
+  const setNum = (key: string, el: Slider): void => {
+    const v = p.get(key);
+    if (v !== null && v.trim() !== '' && !Number.isNaN(Number(v))) {
+      el.value = v;
+      el.refresh();
+    }
+  };
+  const m = p.get('m');
+  if (m === '0' || m === '1') {
+    currentModel = Number(m);
+    activeObj = MODELS[currentModel].obj;
+  }
+  setNum('size', size);
+  setNum('r', radius);
+  setNum('c', clearance);
+  setNum('d', depth);
+  setNum('o', offset);
+  const pa = p.get('pa');
+  if (pa === 'u' || pa === 'v' || pa === 'both') pairAxis = pa;
+  pairOverrides.clear();
+  const ov = p.get('ov');
+  if (ov)
+    for (const part of ov.split(',')) {
+      const [f, a] = part.split(':');
+      if ((a === 'u' || a === 'v' || a === 'both') && f.trim() !== '' && !Number.isNaN(Number(f)))
+        pairOverrides.set(Number(f), a);
+    }
+  if (p.get('stick') === '1') {
+    stickCheck.checked = true;
+    stickDl.style.display = 'block';
+    setNum('sl', stickLen);
+  }
+  paintModel();
+  paintPair();
+  const tab = p.get('tab');
+  return tab === 'faces' || tab === 'plate' ? tab : '3d';
+}
+
+const initialTab = applyStateFromUrl();
+setTab(initialTab);
 await run().catch(reportError);
